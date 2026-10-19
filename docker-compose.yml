@@ -1,0 +1,84 @@
+services:
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build: ./backend
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      SECRET_KEY: ${SECRET_KEY:-dev-only-change-me}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@localhost}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
+      DATABASE_URL: sqlite:////data/observe.db
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: http://localhost:5173
+      DEV_BOOTSTRAP: "true"
+      DEV_API_KEY_FILE: /data/dev_api_key
+      COLLECTOR_INGEST_TOKEN: ${COLLECTOR_INGEST_TOKEN:-dev-only-collector-token}
+      OTLP_GRPC_ENABLED: "true"
+      OTLP_GRPC_PORT: "4319"
+      RETENTION_DAYS: ${RETENTION_DAYS:-14}
+    ports:
+      - "8000:8000"
+      - "4319:4319"
+    volumes:
+      - observe-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  worker:
+    build: ./backend
+    entrypoint: ["python", "-m", "app.workers.main"]
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DATABASE_URL: sqlite:////data/observe.db
+      REDIS_URL: redis://redis:6379/0
+      OTLP_GRPC_ENABLED: "false"
+      DEV_BOOTSTRAP: "false"
+      WORKER_INTERVAL_SECONDS: "15"
+    volumes:
+      - observe-data:/data
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.163.1
+    command: ["--config=/etc/otel/config.yaml"]
+    environment:
+      OBSERVE_API_KEY: ${COLLECTOR_INGEST_TOKEN:-dev-only-collector-token}
+    volumes:
+      - ./collector/otel-collector-config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  observe-data:
+  redis-data:
